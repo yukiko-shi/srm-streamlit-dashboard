@@ -28,32 +28,11 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-import plotly.io as pio
-from io import BytesIO
 
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 import os
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-
-def register_cjk_font():
-    """
-    尝试注册中文字体；将 NotoSansSC-Regular.ttf 放到 ./fonts 下。
-    若失败则回退英文字体。
-    """
-    try:
-        font_path = os.path.join("fonts", "NotoSansSC-Regular.ttf")
-        pdfmetrics.registerFont(TTFont("NotoSansSC", font_path))
-        return "NotoSansSC"
-    except Exception:
-        return "Helvetica"
-
-def to_wan(x: float) -> float:
-    return float(x) / 10000.0
 
 
 # =========================
@@ -403,8 +382,10 @@ with tab5:
     st.header("📄 综合报告输出")
     st.caption("自动汇总关键输入与结论，生成 Markdown 报告用于评审/汇报。")
 
+
     prio_sorted = prio_df.sort_values("优先指数", ascending=False)
     top3 = ", ".join(prio_sorted.head(3)["模块"].tolist())
+
 
     md = io.StringIO()
     print(f"# 预制菜 · SRM 决策评估报告\n", file=md)
@@ -416,101 +397,30 @@ with tab5:
     print(f"- 年采购额：{base_purchase} 万；采购人力：{procurement_hr_cost} 万；供应损失：{annual_loss} 万\n", file=md)
     print(f"- SRM 年化成本：{srm_annual_cost} 万；实施费：{implement_cost} 万（摊 {amort_years} 年）\n", file=md)
 
+
     print("## 二、SRM 引入必要性\n", file=md)
     print(f"- 综合评分（0-100）：**{TOTAL_SCORE:.1f}**\n", file=md)
     for k in DIM_SCORES:
-        print(f"  - {k}：得分 {DIM_SCORES[k]:.1f}，权重 {dim_weights[k]:.2f}", file=md)
+        print(f" - {k}：得分 {DIM_SCORES[k]:.1f}，权重 {dim_weights[k]:.2f}", file=md)
     print("\n", file=md)
+
 
     print("## 三、模块优先级（Top 3）\n", file=md)
     print(f"- 推荐优先实施：**{top3}**\n", file=md)
+
 
     print("## 四、成本-收益（年度情景）\n", file=md)
     print(f"- 情景：{scenario_name}；采购降价：{scen['price_drop']*100:.1f}%；人力节省：{scen['hr_save']*100:.1f}%；损失减少：{scen['loss_drop']*100:.1f}%\n", file=md)
     print(f"- 年度综合收益：{annual_benefit:,.0f} 万；年化成本：{annualized_cost:,.0f} 万；净收益：{net_benefit:,.0f} 万；ROI：{roi*100:,.1f}%\n", file=md)
 
-    radar_fig_obj = _radar_fig(DIM_SCORES)
-prio_bar_fig_obj = _priority_bar(prio_df)
-val_diff_fig_obj = _value_difficulty_scatter(prio_df)
-res_fig_obj = _group_bar(res_df, "科目", "金额", "状态", title=f"情景：{scenario_name} 引入前后对比")
 
-# 复算 ROI 灵敏度图（与 Tab4 一致，但变量独立）
-_deltas = np.array([-0.02, -0.01, 0.0, 0.01, 0.02])
-_records = []
-for d in _deltas:
-    _pd_pct = max(0.0, scen["price_drop"] + d)
-    _ap = base_purchase * (1 - _pd_pct)
-    _ab = (base_purchase - _ap) + (procurement_hr_cost - after_hr) + (annual_loss - after_loss)
-    _r = (_ab - annualized_cost) / annualized_cost if annualized_cost > 0 else np.nan
-    _records.append({"采购降价%": round(_pd_pct * 100, 1), "ROI%": _r * 100})
-_sens_df = pd.DataFrame(_records)
-sens_fig_obj = px.line(_sens_df, x="采购降价%", y="ROI%", markers=True, height=380)
-sens_fig_obj.update_layout(margin=dict(l=10, r=10, t=30, b=20))
+    report_bytes = md.getvalue().encode("utf-8")
+    st.download_button(
+        label="⬇️ 下载 Markdown 报告",
+        data=report_bytes,
+        file_name="SRM_评估报告.md",
+        mime="text/markdown",
+    )
 
-# —— Figure → PNG（kaleido） ——
-def fig_to_rlimage(fig, width_cm=16):
-    try:
-        png_bytes = pio.to_image(fig, format="png", scale=2)  # 需要 kaleido
-    except Exception as e:
-        st.error(f"图表导出失败，请先安装 kaleido：`pip install --user kaleido`。错误：{e}")
-        raise
-    return RLImage(BytesIO(png_bytes), width=width_cm*cm)
 
-radar_img = fig_to_rlimage(radar_fig_obj, 16)
-prio_bar_img = fig_to_rlimage(prio_bar_fig_obj, 16)
-val_diff_img = fig_to_rlimage(val_diff_fig_obj, 16)
-res_img = fig_to_rlimage(res_fig_obj, 16)
-sens_img = fig_to_rlimage(sens_fig_obj, 16)
-
-# —— 构建 PDF（内存） ——
-buffer = BytesIO()
-doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=2*cm, rightMargin=2*cm, topMargin=1.5*cm, bottomMargin=1.5*cm)
-styles = getSampleStyleSheet()
-
-# 应用中文字体（若可用）
-_font_name = register_cjk_font()
-styles["Normal"].fontName = _font_name
-styles["Heading1"].fontName = _font_name
-styles["Heading2"].fontName = _font_name
-styles.add(ParagraphStyle(name="Small", parent=styles["Normal"], fontSize=10, leading=14))
-styles.add(ParagraphStyle(name="H1", parent=styles["Heading1"], spaceAfter=8))
-styles.add(ParagraphStyle(name="H2", parent=styles["Heading2"], spaceAfter=6))
-
-story = []
-
-# Markdown 文本粗粒度渲染
-for line in md.getvalue().split("\n"):
-    if line.startswith("# "):
-        story.append(Paragraph(line[2:], styles["H1"]))
-    elif line.startswith("## "):
-        story.append(Paragraph(line[3:], styles["H2"]))
-    elif line.strip() == "":
-        story.append(Spacer(1, 0.2*cm))
-    else:
-        story.append(Paragraph(line, styles["Small"]))
-
-story.append(Spacer(1, 0.4*cm))
-story.append(PageBreak())
-
-# 插图页
-story.append(Paragraph("附录一：评估可视化", styles["H1"]))
-for title, img in [
-    ("维度雷达图", radar_img),
-    ("模块优先级（条形图）", prio_bar_img),
-    ("价值-难度矩阵", val_diff_img),
-    ("引入前后对比", res_img),
-    ("ROI 灵敏度分析", sens_img),
-]:
-    story.append(Paragraph(title, styles["H2"]))
-    story.append(img)
-    story.append(Spacer(1, 0.5*cm))
-
-doc.build(story)
-pdf_bytes = buffer.getvalue()
-st.download_button(
-    "⬇️ 下载 PDF 报告（含图表）",
-    data=pdf_bytes,
-    file_name=f"SRM_评估报告_{date.today().isoformat()}.pdf",
-    mime="application/pdf",
-)
-st.caption("已嵌入：雷达图、模块优先级、价值-难度、前后对比、ROI灵敏度。")
+    st.success("已根据当前输入生成报告。建议将图表截图粘入报告，或二期集成PDF导出。")
