@@ -30,10 +30,6 @@ import plotly.graph_objects as go
 import streamlit as st
 
 
-import os
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-
 
 # =========================
 # 0) 全局配置与默认参数
@@ -424,3 +420,4 @@ with tab5:
 
 
     st.success("已根据当前输入生成报告。建议将图表截图粘入报告，或二期集成PDF导出。")
+
