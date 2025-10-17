@@ -28,6 +28,13 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import plotly.io as pio
+from io import BytesIO
+
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import cm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 # =========================
 # 0) 全局配置与默认参数
@@ -180,7 +187,7 @@ with tab1:
         top5_conc = st.slider("前五大供应商集中度（%）", 0, 100, 60)
 
     st.markdown("---")
-    st.subheader("财务基线（年度，万元）")
+    st.subheader("财务基线（年度，元）")
     c3, c4, c5 = st.columns(3)
     with c3:
         base_purchase = st.number_input("年原料采购额", 0, 100000000, 100000, step=1000)
@@ -193,7 +200,7 @@ with tab1:
         amort_years = st.number_input("摊销年限（年）", 1, 10, 3)
 
     st.info(
-        "提示：数值仅示例。原料成本率越高、供应复杂度越高，SRM的降本空间和治理价值通常越大。"
+        "提示：原料成本率越高、供应复杂度越高，SRM的降本空间和治理价值通常越大。"
     )
 
 # ---------------------------------
@@ -231,7 +238,7 @@ TOTAL_SCORE = float(sum(DIM_SCORES[k] * dim_weights.get(k, 0) for k in DIM_SCORE
 # --------------------------------------
 with tab2:
     st.header("🧭 SRM 引入必要性评估")
-    st.caption("基于多维度加权得分（MVP版：规则+权重），后续可接入AHP/Delphi。")
+    st.caption("基于多维度加权得分（MVP版：规则+权重）")
 
     c1, c2 = st.columns([1, 1])
     with c1:
@@ -402,12 +409,66 @@ with tab5:
     print(f"- 情景：{scenario_name}；采购降价：{scen['price_drop']*100:.1f}%；人力节省：{scen['hr_save']*100:.1f}%；损失减少：{scen['loss_drop']*100:.1f}%\n", file=md)
     print(f"- 年度综合收益：{annual_benefit:,.0f} 万；年化成本：{annualized_cost:,.0f} 万；净收益：{net_benefit:,.0f} 万；ROI：{roi*100:,.1f}%\n", file=md)
 
-    report_bytes = md.getvalue().encode("utf-8")
-    st.download_button(
-        label="⬇️ 下载 Markdown 报告",
-        data=report_bytes,
-        file_name="SRM_评估报告.md",
-        mime="text/markdown",
-    )
+    def fig_to_rlimage(fig, width_cm=16):
+        png_bytes = pio.to_image(fig, format="png", scale=2)
+        img = RLImage(BytesIO(png_bytes), width=width_cm*cm)
+        return img
 
-    st.success("已根据当前输入生成报告。建议将图表截图粘入报告，或二期集成PDF导出。")
+    radar_img = fig_to_rlimage(radar_fig, 16)
+    prio_bar_img = fig_to_rlimage(prio_bar_fig, 16)
+    val_diff_img = fig_to_rlimage(val_diff_fig, 16)
+    res_img = fig_to_rlimage(res_fig, 16)
+    sens_img = fig_to_rlimage(sens_fig, 16)
+
+    # 2) 构建 PDF（内存中）
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=2*cm, rightMargin=2*cm, topMargin=1.5*cm, bottomMargin=1.5*cm)
+    styles = getSampleStyleSheet()
+    # 中文环境可选：基础样式微调
+    styles.add(ParagraphStyle(name="Small", parent=styles["Normal"], fontSize=10, leading=14))
+    styles.add(ParagraphStyle(name="H1", parent=styles["Heading1"], spaceAfter=8))
+    styles.add(ParagraphStyle(name="H2", parent=styles["Heading2"], spaceAfter=6))
+
+    story = []
+
+    # 3) 把 Markdown 文本粗粒度渲染成段落（标题/正文）
+    for line in md.getvalue().split("\n"):
+        if line.startswith("# "):
+            story.append(Paragraph(line[2:], styles["H1"]))
+        elif line.startswith("## "):
+            story.append(Paragraph(line[3:], styles["H2"]))
+        elif line.strip() == "":
+            story.append(Spacer(1, 0.2*cm))
+        else:
+            story.append(Paragraph(line, styles["Small"]))
+
+    story.append(Spacer(1, 0.4*cm))
+    story.append(PageBreak())
+
+    # 4) 插入关键图表页
+    story.append(Paragraph("附录一：评估可视化", styles["H1"]))
+    story.append(Paragraph("维度雷达图", styles["H2"]))
+    story.append(radar_img); story.append(Spacer(1, 0.5*cm))
+
+    story.append(Paragraph("模块优先级（条形图）", styles["H2"]))
+    story.append(prio_bar_img); story.append(Spacer(1, 0.5*cm))
+
+    story.append(Paragraph("价值-难度矩阵", styles["H2"]))
+    story.append(val_diff_img); story.append(Spacer(1, 0.5*cm))
+
+    story.append(Paragraph("引入前后对比", styles["H2"]))
+    story.append(res_img); story.append(Spacer(1, 0.5*cm))
+
+    story.append(Paragraph("ROI 灵敏度分析", styles["H2"]))
+    story.append(sens_img); story.append(Spacer(1, 0.5*cm))
+
+    # 5) 生成 PDF 并提供下载
+    doc.build(story)
+    pdf_bytes = buffer.getvalue()
+    st.download_button(
+        "⬇️ 下载 PDF 报告（含图表）",
+        data=pdf_bytes,
+        file_name=f"SRM_评估报告_{date.today().isoformat()}.pdf",
+        mime="application/pdf",
+    )
+    st.caption("已自动嵌入：雷达图、模块优先级、价值-难度、前后对比、ROI灵敏度等图表。")
